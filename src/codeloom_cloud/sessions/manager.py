@@ -34,6 +34,20 @@ class SessionManager:
     def bridge_for(self, session_id: str) -> SessionBridge | None:
         return self._bridges.get(session_id)
 
+    def sandbox_env(self, project: Project, token: str) -> dict[str, str]:
+        """Environment for the sandbox process. Keys stay out of the clone."""
+        env = {
+            "GIT_URL": f"https://github.com/{project.owner}/{project.repo}.git",
+            "GIT_BRANCH": project.default_branch,
+        }
+        if token:
+            env["GITHUB_TOKEN"] = token
+        if self.settings.openrouter_api_key:
+            env["OPENROUTER_API_KEY"] = self.settings.openrouter_api_key
+        if self.settings.typesafe_api_key:
+            env["TYPESAFE_API_KEY"] = self.settings.typesafe_api_key
+        return env
+
     async def provision(self, session_id: str) -> None:
         token = ""
         container_id: str | None = None
@@ -48,14 +62,7 @@ class SessionManager:
                 token = decrypt_token(user.access_token_encrypted, self.settings)
             except TokenError as exc:
                 raise RuntimeError(str(exc)) from exc
-            env = {
-                "GIT_URL": f"https://github.com/{project.owner}/{project.repo}.git",
-                "GIT_BRANCH": project.default_branch,
-            }
-            if token:
-                env["GITHUB_TOKEN"] = token
-            if self.settings.openrouter_api_key:
-                env["OPENROUTER_API_KEY"] = self.settings.openrouter_api_key
+            env = self.sandbox_env(project, token)
             handle = await self.driver.start(session_id, workspace, env)
             container_id = handle.container_id
             self._update(session_id, container_id=container_id, socket_path=str(handle.socket_path))
@@ -94,8 +101,13 @@ class SessionManager:
                     logger.exception("stop after failure failed for %s", session_id)
             if session_id not in self._cancelled:
                 message = str(exc) or exc.__class__.__name__
-                if token and token in message:
-                    message = message.replace(token, "[redacted]")
+                for secret in (
+                    token,
+                    self.settings.openrouter_api_key,
+                    self.settings.typesafe_api_key,
+                ):
+                    if secret and secret in message:
+                        message = message.replace(secret, "[redacted]")
                 self._update(session_id, status="error", error=message)
 
     async def stop(self, session_id: str, user_id: str) -> SessionRecord:

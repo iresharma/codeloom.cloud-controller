@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     session_secret: str = "dev-secret-change-me"
     token_encryption_key: str = ""
     openrouter_api_key: str = ""
+    typesafe_api_key: str = ""
     sandbox_image: str = "codeloom-sandbox:main"
     engine_ref: str = "main"
     sandbox_memory: str = "2g"

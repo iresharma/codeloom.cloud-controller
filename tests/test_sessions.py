@@ -8,12 +8,32 @@ from urllib.parse import urlencode
 
 import pytest
 
+from types import SimpleNamespace
+
 from codeloom_cloud.app import create_app
+from codeloom_cloud.config import Settings
 from codeloom_cloud.engine.client import EngineClient
 from codeloom_cloud.engine.commands import ProtocolError, prepare_command
 from codeloom_cloud.sandbox.fake import FakeEngine, FakeSandboxDriver
+from codeloom_cloud.sessions.manager import SessionManager
 
 from tests.helpers import allow_repo, auth_header, login, wait_until_settled
+
+
+def test_sandbox_env_omits_blank_model_keys():
+    settings = Settings(
+        session_secret="test-secret-test-secret-test-secret",
+        openrouter_api_key="",
+        typesafe_api_key="",
+    )
+    manager = SessionManager(settings, FakeSandboxDriver())
+    project = SimpleNamespace(owner="octocat", repo="hello", default_branch="main")
+    env = manager.sandbox_env(project, "gho_secret")
+    assert env["GIT_URL"] == "https://github.com/octocat/hello.git"
+    assert env["GIT_BRANCH"] == "main"
+    assert env["GITHUB_TOKEN"] == "gho_secret"
+    assert "OPENROUTER_API_KEY" not in env
+    assert "TYPESAFE_API_KEY" not in env
 
 
 def test_prepare_command_rewrites_workspace_and_rejects_unknown():
@@ -97,6 +117,9 @@ def test_session_provisions_and_streams_subagent_events(client, github, driver):
 
     engine = driver.engines[ready["id"]]
     assert engine.received[0] == {"type": "StartSession", "workspace": "/workspace"}
+    assert driver.envs[ready["id"]]["OPENROUTER_API_KEY"] == "sk-test"
+    assert driver.envs[ready["id"]]["TYPESAFE_API_KEY"] == "ts-test"
+    assert "ts-test" not in driver.envs[ready["id"]]["GIT_URL"]
 
     other, _other_access = login(
         client,
