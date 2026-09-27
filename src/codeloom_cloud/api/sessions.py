@@ -14,7 +14,7 @@ from codeloom_cloud.api.projects import owned_project
 from codeloom_cloud.api.schemas import SessionOut
 from codeloom_cloud.auth.deps import get_current_user
 from codeloom_cloud.auth.tokens import read_session_token
-from codeloom_cloud.db import SessionLocal, get_db
+from codeloom_cloud.db import get_db, open_session
 from codeloom_cloud.engine.commands import ProtocolError
 from codeloom_cloud.models import Project, SessionRecord, User
 
@@ -48,7 +48,7 @@ def owned_session(db: Session, user: User, session_id: str) -> tuple[SessionReco
 
 
 @router.post("/projects/{project_id}/sessions", response_model=SessionOut, status_code=201)
-def create_session(
+async def create_session(
     project_id: str,
     request: Request,
     user: User = Depends(get_current_user),
@@ -131,10 +131,11 @@ async def stream_session(websocket: WebSocket, session_id: str, token: str = "")
     except HTTPException:
         await websocket.close(code=4401)
         return
-    if SessionLocal is None:
+    try:
+        db = open_session()
+    except RuntimeError:
         await websocket.close(code=1011)
         return
-    db = SessionLocal()
     try:
         user = db.get(User, user_id)
         row = db.get(SessionRecord, session_id)

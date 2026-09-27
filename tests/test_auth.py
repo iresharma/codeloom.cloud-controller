@@ -47,10 +47,10 @@ def test_token_round_trip(settings):
 
 
 def _stored_token(client, settings):
-    from codeloom_cloud.db import SessionLocal
+    from codeloom_cloud.db import open_session
     from codeloom_cloud.models import User
 
-    db = SessionLocal()
+    db = open_session()
     try:
         user = db.query(User).one()
         return user.access_token_encrypted

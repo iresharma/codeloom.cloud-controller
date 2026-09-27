@@ -36,10 +36,14 @@ def init_db(database_url: str) -> None:
     Base.metadata.create_all(_engine)
 
 
-def get_db() -> Iterator[Session]:
+def open_session() -> Session:
     if SessionLocal is None:
         raise RuntimeError("database is not initialized")
-    db = SessionLocal()
+    return SessionLocal()
+
+
+def get_db() -> Iterator[Session]:
+    db = open_session()
     try:
         yield db
     finally:

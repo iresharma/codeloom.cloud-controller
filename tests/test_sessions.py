@@ -269,7 +269,7 @@ async def test_reattach_marks_an_interrupted_provision(settings, github):
     from datetime import datetime, timezone
     from uuid import uuid4
 
-    from codeloom_cloud.db import SessionLocal
+    from codeloom_cloud.db import open_session
     from codeloom_cloud.models import Project, SessionRecord, User
 
     driver = FakeSandboxDriver()
@@ -306,8 +306,12 @@ async def test_reattach_marks_an_interrupted_provision(settings, github):
         created_at=now,
         stopped_at=None,
     )
-    db = SessionLocal()
-    db.add_all([user, project, session])
+    db = open_session()
+    db.add(user)
+    db.flush()
+    db.add(project)
+    db.flush()
+    db.add(session)
     db.commit()
     session_id = session.id
     db.close()
@@ -315,7 +319,7 @@ async def test_reattach_marks_an_interrupted_provision(settings, github):
 
     await app.state.manager.reattach()
 
-    db = SessionLocal()
+    db = open_session()
     try:
         row = db.get(SessionRecord, session_id)
         assert row is not None
@@ -335,7 +339,7 @@ def test_host_data_dir_is_the_docker_bind_source(tmp_path):
         database_url="sqlite://",
         data_dir=data,
         host_data_dir=host,
-        session_secret="test-secret",
+        session_secret="test-secret-test-secret-test-secret",
     )
     source = cfg.docker_bind_source(data / "sessions" / "abc")
     assert source == str((host / "sessions" / "abc").resolve())

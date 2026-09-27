@@ -21,7 +21,7 @@ def settings():
     cfg = Settings(
         database_url=f"sqlite:///{root / 't.db'}",
         data_dir=data,
-        session_secret="test-secret",
+        session_secret="test-secret-test-secret-test-secret",
         token_encryption_key="",
         github_client_id="cid",
         github_client_secret="csecret",

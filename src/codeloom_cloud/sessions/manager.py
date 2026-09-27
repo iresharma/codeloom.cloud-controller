@@ -8,7 +8,7 @@ from pathlib import Path
 
 from codeloom_cloud.config import Settings
 from codeloom_cloud.crypto import TokenError, decrypt_token
-from codeloom_cloud.db import SessionLocal
+from codeloom_cloud.db import open_session
 from codeloom_cloud.engine.bridge import SessionBridge
 from codeloom_cloud.engine.client import EngineClient
 from codeloom_cloud.models import Project, SessionRecord, User
@@ -234,9 +234,7 @@ class SessionManager:
 
     @contextmanager
     def _scope(self):
-        if SessionLocal is None:
-            raise RuntimeError("database is not initialized")
-        db = SessionLocal()
+        db = open_session()
         try:
             yield db
             db.commit()
