@@ -1,0 +1,90 @@
+from __future__ import annotations
+
+import asyncio
+import logging
+from pathlib import Path
+
+from codeloom_cloud.config import Settings
+from codeloom_cloud.sandbox.driver import SandboxHandle
+
+logger = logging.getLogger(__name__)
+
+
+class DockerSandboxDriver:
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+        self._client = None
+
+    def _docker(self):
+        if self._client is None:
+            import docker
+
+            self._client = docker.from_env()
+        return self._client
+
+    async def start(
+        self,
+        session_id: str,
+        host_workspace: Path,
+        env: dict[str, str],
+    ) -> SandboxHandle:
+        source = self.settings.docker_bind_source(host_workspace)
+        image = self.settings.sandbox_image
+        memory = self.settings.sandbox_memory
+        cpu_period = 100_000
+        cpu_quota = int(self.settings.sandbox_cpus * cpu_period)
+
+        def _run():
+            return self._docker().containers.run(
+                image,
+                detach=True,
+                name=f"codeloom-session-{session_id}",
+                environment=env,
+                volumes={source: {"bind": "/workspace", "mode": "rw"}},
+                mem_limit=memory,
+                cpu_period=cpu_period,
+                cpu_quota=cpu_quota,
+                network_mode="bridge",
+            )
+
+        try:
+            container = await asyncio.to_thread(_run)
+        except Exception as exc:
+            logger.exception("sandbox start failed for %s", session_id)
+            raise RuntimeError(f"failed to start sandbox: {exc}") from exc
+        return SandboxHandle(
+            container_id=container.id,
+            socket_path=host_workspace / ".engine" / "engine.sock",
+        )
+
+    async def stop(self, container_id: str) -> None:
+        def _stop() -> None:
+            import docker
+
+            try:
+                container = self._docker().containers.get(container_id)
+            except docker.errors.NotFound:
+                return
+            try:
+                container.stop(timeout=10)
+            except docker.errors.NotFound:
+                return
+            try:
+                container.remove(force=True)
+            except docker.errors.NotFound:
+                return
+
+        await asyncio.to_thread(_stop)
+
+    async def is_running(self, container_id: str) -> bool:
+        def _running() -> bool:
+            import docker
+
+            try:
+                container = self._docker().containers.get(container_id)
+            except docker.errors.NotFound:
+                return False
+            container.reload()
+            return container.status == "running"
+
+        return await asyncio.to_thread(_running)
