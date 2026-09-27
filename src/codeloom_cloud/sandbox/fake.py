@@ -102,6 +102,7 @@ class FakeSandboxDriver:
         self.fail_start = fail_start
         self.fail_engine = fail_engine
         self.engines: dict[str, FakeEngine] = {}
+        self.envs: dict[str, dict[str, str]] = {}
         self.running: dict[str, bool] = {}
         self.stopped: list[str] = []
 
@@ -119,6 +120,7 @@ class FakeSandboxDriver:
         await engine.start()
         container_id = f"fake-{session_id}"
         self.engines[session_id] = engine
+        self.envs[session_id] = env
         self.running[container_id] = True
         return SandboxHandle(container_id=container_id, socket_path=socket_path)
 

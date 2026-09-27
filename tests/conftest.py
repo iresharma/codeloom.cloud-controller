@@ -28,6 +28,7 @@ def settings():
         github_oauth_callback_url="http://localhost:8000/auth/github/callback",
         frontend_origin="http://localhost:3000",
         openrouter_api_key="sk-test",
+        typesafe_api_key="ts-test",
         sandbox_image="codeloom-sandbox:test",
         engine_ref="main",
         engine_ready_timeout=5,
