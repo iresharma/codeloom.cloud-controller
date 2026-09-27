@@ -3,27 +3,37 @@ set -eu
 
 umask 000
 
+# gh already reads GITHUB_TOKEN. Do not run `gh auth login` — with the token
+# already in the environment that command exits after a warning and kills
+# the container before the engine starts.
 if [ -n "${GITHUB_TOKEN:-}" ]; then
-  printf '%s' "$GITHUB_TOKEN" | gh auth login --hostname github.com --with-token
-  gh auth setup-git
+  git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"
 fi
+
+python /usr/local/bin/tcp_proxy.py &
+proxy_pid=$!
 
 if [ ! -d /workspace/.git ]; then
   if [ -z "${GIT_URL:-}" ]; then
     echo "GIT_URL is required" >&2
     exit 1
   fi
+  mkdir -p /tmp/src
   if [ -n "${GIT_BRANCH:-}" ]; then
-    git clone --branch "$GIT_BRANCH" "$GIT_URL" /workspace
+    git clone --branch "$GIT_BRANCH" "$GIT_URL" /tmp/src
   else
-    git clone "$GIT_URL" /workspace
+    git clone "$GIT_URL" /tmp/src
   fi
+  # /workspace may already have a tmpfs .engine; copy the clone beside it.
+  cp -a /tmp/src/. /workspace/
+  rm -rf /tmp/src
 fi
 
 python /opt/codeloom.engine/app.py /workspace &
 pid=$!
 
 shutdown() {
+  kill -TERM "$proxy_pid" 2>/dev/null || true
   kill -TERM "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
 }
@@ -37,10 +47,18 @@ while [ "$i" -lt 120 ]; do
   fi
   if ! kill -0 "$pid" 2>/dev/null; then
     wait "$pid"
-    exit $?
+    status=$?
+    kill -TERM "$proxy_pid" 2>/dev/null || true
+    exit "$status"
   fi
   i=$((i + 1))
   sleep 0.5
 done
 
+set +e
 wait "$pid"
+status=$?
+set -e
+kill -TERM "$proxy_pid" 2>/dev/null || true
+wait "$proxy_pid" 2>/dev/null || true
+exit "$status"

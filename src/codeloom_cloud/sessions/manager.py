@@ -12,9 +12,21 @@ from codeloom_cloud.db import open_session
 from codeloom_cloud.engine.bridge import SessionBridge
 from codeloom_cloud.engine.client import EngineClient
 from codeloom_cloud.models import Project, SessionRecord, User
-from codeloom_cloud.sandbox.driver import SandboxDriver
+from codeloom_cloud.sandbox.driver import (
+    SandboxDriver,
+    SandboxHandle,
+    encode_engine_endpoint,
+    parse_engine_endpoint,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _retryable_start(exc: Exception) -> bool:
+    if isinstance(exc, (OSError, TimeoutError, ConnectionError)):
+        return True
+    message = str(exc).lower()
+    return "connection closed" in message or "not connected" in message
 
 
 class SessionManager:
@@ -65,19 +77,15 @@ class SessionManager:
             env = self.sandbox_env(project, token)
             handle = await self.driver.start(session_id, workspace, env)
             container_id = handle.container_id
-            self._update(session_id, container_id=container_id, socket_path=str(handle.socket_path))
+            self._update(
+                session_id,
+                container_id=container_id,
+                socket_path=encode_engine_endpoint(handle),
+            )
             if session_id in self._cancelled:
                 await self.driver.stop(container_id)
                 return
-            client = EngineClient(self.settings.engine_workspace)
-            await self._connect(client, handle.socket_path, self.settings.socket_wait_timeout)
-            bridge = SessionBridge(client)
-            bridge.start()
-            self._bridges[session_id] = bridge
-            await bridge.send(
-                {"type": "StartSession", "workspace": self.settings.engine_workspace}
-            )
-            engine_session_id = await bridge.wait_ready(self.settings.engine_ready_timeout)
+            engine_session_id = await self._start_engine(session_id, handle)
             if session_id in self._cancelled:
                 await self._close_bridge(session_id)
                 await self.driver.stop(container_id)
@@ -94,21 +102,14 @@ class SessionManager:
         except Exception as exc:
             logger.exception("provision failed for %s", session_id)
             await self._close_bridge(session_id)
+            if session_id not in self._cancelled:
+                message = await self._failure_message(exc, token, container_id)
+                self._update(session_id, status="error", error=message)
             if container_id and session_id not in self._cancelled:
                 try:
                     await self.driver.stop(container_id)
                 except Exception:
                     logger.exception("stop after failure failed for %s", session_id)
-            if session_id not in self._cancelled:
-                message = str(exc) or exc.__class__.__name__
-                for secret in (
-                    token,
-                    self.settings.openrouter_api_key,
-                    self.settings.typesafe_api_key,
-                ):
-                    if secret and secret in message:
-                        message = message.replace(secret, "[redacted]")
-                self._update(session_id, status="error", error=message)
 
     async def stop(self, session_id: str, user_id: str) -> SessionRecord:
         row = self._load(session_id)
@@ -156,9 +157,10 @@ class SessionManager:
                 if container_id:
                     await self._stop_container(container_id)
                 continue
-            path = Path(socket_path) if socket_path else None
             running = bool(container_id) and await self.driver.is_running(container_id)
-            if not running or path is None or not path.exists():
+            host, port, path = parse_engine_endpoint(socket_path) if socket_path else (None, None, None)
+            reachable = (host is not None and port is not None) or (path is not None and path.exists())
+            if not running or not reachable:
                 self._update(
                     session_id,
                     status="stopped",
@@ -168,7 +170,7 @@ class SessionManager:
                     await self._stop_container(container_id)
                 continue
             try:
-                await self._attach(session_id, path)
+                await self._attach(session_id, host=host, port=port, socket_path=path)
             except Exception as exc:
                 logger.exception("reattach failed for %s", session_id)
                 await self._close_bridge(session_id)
@@ -184,25 +186,147 @@ class SessionManager:
         for session_id in list(self._bridges):
             await self._close_bridge(session_id)
 
-    async def _attach(self, session_id: str, socket_path: Path) -> None:
-        client = EngineClient(self.settings.engine_workspace)
-        await self._connect(client, socket_path, self.settings.socket_wait_timeout)
-        bridge = SessionBridge(client)
+    def _open_bridge(self, session_id: str, client: EngineClient) -> SessionBridge:
+        bridge = SessionBridge(
+            client,
+            on_disconnect=lambda: self._engine_gone(session_id),
+        )
         bridge.start()
         self._bridges[session_id] = bridge
+        return bridge
 
-    async def _connect(self, client: EngineClient, socket_path: Path, timeout: float) -> None:
+    def _engine_gone(self, session_id: str) -> None:
+        if session_id in self._cancelled:
+            return
+        task = asyncio.create_task(
+            self._mark_disconnected(session_id),
+            name=f"disconnect-{session_id}",
+        )
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def _mark_disconnected(self, session_id: str) -> None:
+        if session_id in self._cancelled:
+            return
+        try:
+            row = self._load(session_id)
+        except KeyError:
+            return
+        if row.status != "ready":
+            return
+        self._update(session_id, status="error", error="engine connection closed")
+        await self._close_bridge(session_id)
+        if row.container_id:
+            await self._stop_container(row.container_id)
+
+    async def _attach(
+        self,
+        session_id: str,
+        *,
+        host: str | None,
+        port: int | None,
+        socket_path: Path | None,
+    ) -> None:
+        client = EngineClient(self.settings.engine_workspace)
+        handle = SandboxHandle(
+            container_id="",
+            socket_path=socket_path or Path(""),
+            engine_host=host,
+            engine_port=port,
+        )
+        await self._connect(client, handle, self.settings.socket_wait_timeout)
+        self._open_bridge(session_id, client)
+
+    async def _start_engine(self, session_id: str, handle: SandboxHandle) -> str:
+        """Connect and StartSession until SnapshotReady.
+
+        Docker can accept the published port before the in-container proxy is
+        listening, which looks like an immediate EOF. Retry until timeout.
+        """
+        timeout = max(self.settings.socket_wait_timeout, self.settings.engine_ready_timeout)
         deadline = asyncio.get_running_loop().time() + timeout
         last: Exception | None = None
         while asyncio.get_running_loop().time() < deadline:
-            if socket_path.exists():
-                try:
-                    await client.connect(str(socket_path))
-                    return
-                except OSError as exc:
-                    last = exc
+            if session_id in self._cancelled:
+                raise RuntimeError("session cancelled")
+            client = EngineClient(self.settings.engine_workspace)
+            try:
+                await self._connect_once(client, handle)
+            except OSError as exc:
+                last = exc
+                await client.close()
+                await asyncio.sleep(0.2)
+                continue
+            await self._close_bridge(session_id)
+            bridge = self._open_bridge(session_id, client)
+            try:
+                await bridge.send(
+                    {"type": "StartSession", "workspace": self.settings.engine_workspace}
+                )
+                remaining = max(0.05, deadline - asyncio.get_running_loop().time())
+                return await bridge.wait_ready(remaining)
+            except Exception as exc:
+                await self._close_bridge(session_id)
+                if not _retryable_start(exc):
+                    raise
+                last = exc
+                await asyncio.sleep(0.2)
+        raise TimeoutError(
+            f"engine did not become ready: {last or 'engine connection closed'}"
+        ) from last
+
+    async def _connect(
+        self,
+        client: EngineClient,
+        handle: SandboxHandle,
+        timeout: float,
+    ) -> None:
+        deadline = asyncio.get_running_loop().time() + timeout
+        last: Exception | None = None
+        target = encode_engine_endpoint(handle)
+        while asyncio.get_running_loop().time() < deadline:
+            try:
+                await self._connect_once(client, handle)
+                return
+            except OSError as exc:
+                last = exc
             await asyncio.sleep(0.05)
-        raise TimeoutError(f"engine socket not ready: {socket_path}") from last
+        raise TimeoutError(f"engine socket not ready: {target}") from last
+
+    async def _connect_once(self, client: EngineClient, handle: SandboxHandle) -> None:
+        if handle.engine_host and handle.engine_port:
+            await client.connect_tcp(handle.engine_host, handle.engine_port)
+            return
+        if handle.socket_path and handle.socket_path.exists():
+            await client.connect(str(handle.socket_path))
+            return
+        raise OSError("engine endpoint not available")
+
+    async def _failure_message(
+        self,
+        exc: Exception,
+        token: str,
+        container_id: str | None,
+    ) -> str:
+        message = str(exc) or exc.__class__.__name__
+        if container_id:
+            try:
+                logs = await self.driver.logs(container_id)
+            except Exception:
+                logs = ""
+            if logs.strip():
+                message = f"{message}\n{logs.strip()}"
+        return self._redact(message, token)
+
+    def _redact(self, message: str, token: str) -> str:
+        for secret in (
+            token,
+            self.settings.openrouter_api_key,
+            self.settings.typesafe_api_key,
+        ):
+            if secret and secret in message:
+                message = message.replace(secret, "[redacted]")
+        return message
 
     async def _close_bridge(self, session_id: str) -> None:
         bridge = self._bridges.pop(session_id, None)

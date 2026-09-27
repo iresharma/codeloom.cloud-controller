@@ -17,10 +17,13 @@ Create a GitHub OAuth app. The callback URL must match `GITHUB_OAUTH_CALLBACK_UR
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-Build the sandbox image (this clones the engine at `ENGINE_REF`):
+Build the sandbox image from the local engine checkout (`workspace/engine`):
 
 ```bash
-docker build -t codeloom-sandbox:main --build-arg ENGINE_REF=main sandbox
+docker build -t codeloom-sandbox:main \
+  -f sandbox/Dockerfile \
+  --build-context engine=../engine \
+  sandbox
 ```
 
 `SANDBOX_IMAGE` must match that tag. `OPENROUTER_API_KEY` and `TYPESAFE_API_KEY` are injected into each sandbox and are not written into the clone. The engine uses the OpenRouter key for chat and the TypeSafe key for the judge. A session can still reach `ready` when either key is empty; chat or judging then fails inside the engine.

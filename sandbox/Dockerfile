@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 FROM python:3.11-slim-bookworm
 
 ENV PYTHONUNBUFFERED=1
@@ -21,12 +22,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /tmp/gh.tgz "/tmp/gh_2.62.0_linux_${GH_ARCH}" \
     && rm -rf /var/lib/apt/lists/*
 
-ARG ENGINE_REF=main
-RUN git clone --depth 1 --branch "${ENGINE_REF}" \
-        https://github.com/iresharma/codeloom.engine.git /opt/codeloom.engine \
-    && pip install --no-cache-dir -r /opt/codeloom.engine/requirements.txt
+COPY --from=engine app.py requirements.txt pyproject.toml /opt/codeloom.engine/
+COPY --from=engine agents /opt/codeloom.engine/agents
+COPY --from=engine clients /opt/codeloom.engine/clients
+COPY --from=engine llm /opt/codeloom.engine/llm
+COPY --from=engine protocol /opt/codeloom.engine/protocol
+COPY --from=engine runtime /opt/codeloom.engine/runtime
+COPY --from=engine tools /opt/codeloom.engine/tools
+RUN pip install --no-cache-dir -r /opt/codeloom.engine/requirements.txt
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY tcp_proxy.py /usr/local/bin/tcp_proxy.py
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
 WORKDIR /workspace

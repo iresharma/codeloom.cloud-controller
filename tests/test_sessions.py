@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 import tempfile
 from pathlib import Path
@@ -14,6 +15,7 @@ from codeloom_cloud.app import create_app
 from codeloom_cloud.config import Settings
 from codeloom_cloud.engine.client import EngineClient
 from codeloom_cloud.engine.commands import ProtocolError, prepare_command
+from codeloom_cloud.sandbox.driver import SandboxHandle
 from codeloom_cloud.sandbox.fake import FakeEngine, FakeSandboxDriver
 from codeloom_cloud.sessions.manager import SessionManager
 
@@ -151,8 +153,130 @@ def test_session_provisions_and_streams_subagent_events(client, github, driver):
     )
 
 
+async def test_client_speaks_ndjson_over_tcp():
+    received: list[dict] = []
+
+    async def handle(reader, writer) -> None:
+        line = await reader.readline()
+        received.append(json.loads(line))
+        writer.write(
+            (
+                json.dumps(
+                    {
+                        "type": "SnapshotReady",
+                        "snapshot": {"session_id": "tcp-session"},
+                    }
+                )
+                + "\n"
+            ).encode()
+        )
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    client = EngineClient("/workspace")
+    await client.connect_tcp("127.0.0.1", port)
+    await client.send({"type": "StartSession", "workspace": "/evil"})
+    event = await _next_event(client)
+    assert received == [{"type": "StartSession", "workspace": "/workspace"}]
+    assert event["type"] == "SnapshotReady"
+    assert event["snapshot"]["session_id"] == "tcp-session"
+    await client.close()
+    server.close()
+    await server.wait_closed()
+
+
+async def test_start_engine_retries_after_tcp_eof(settings):
+    hits = {"n": 0}
+
+    async def handle(reader, writer) -> None:
+        hits["n"] += 1
+        if hits["n"] == 1:
+            writer.close()
+            await writer.wait_closed()
+            return
+        await reader.readline()
+        writer.write(
+            (
+                json.dumps(
+                    {
+                        "type": "SnapshotReady",
+                        "snapshot": {"session_id": "retried-session"},
+                    }
+                )
+                + "\n"
+            ).encode()
+        )
+        await writer.drain()
+        await reader.read()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    manager = SessionManager(settings, FakeSandboxDriver())
+    handle_info = SandboxHandle(
+        container_id="c",
+        socket_path=Path("/unused"),
+        engine_host="127.0.0.1",
+        engine_port=port,
+    )
+    try:
+        session_id = await manager._start_engine("retry-session", handle_info)
+        assert session_id == "retried-session"
+        assert hits["n"] == 2
+    finally:
+        await manager._close_bridge("retry-session")
+        server.close()
+        await server.wait_closed()
+
+
+async def test_dropped_engine_connection_emits_error():
+    from codeloom_cloud.engine.bridge import SessionBridge
+
+    async def handle(reader, writer) -> None:
+        await reader.readline()
+        writer.write(
+            (
+                json.dumps(
+                    {
+                        "type": "SnapshotReady",
+                        "snapshot": {"session_id": "engine-session"},
+                    }
+                )
+                + "\n"
+            ).encode()
+        )
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    client = EngineClient("/workspace")
+    await client.connect_tcp("127.0.0.1", port)
+    disconnected = asyncio.Event()
+    bridge = SessionBridge(client, on_disconnect=disconnected.set)
+    queue = bridge.subscribe()
+    bridge.start()
+    await bridge.send({"type": "StartSession", "workspace": "/workspace"})
+    assert await bridge.wait_ready(2) == "engine-session"
+    await asyncio.wait_for(disconnected.wait(), 2)
+    found = None
+    while not queue.empty():
+        event = queue.get_nowait()
+        if event.get("type") == "ErrorOccurred":
+            found = event
+    assert found is not None
+    assert "engine connection closed" in found["message"]
+    await bridge.close()
+    server.close()
+    await server.wait_closed()
+
+
 def test_engine_failure_stops_the_sandbox(settings, github):
     driver = FakeSandboxDriver(fail_engine=True)
+    driver.log_text = "git clone: repository not found"
     app = create_app(settings, driver=driver, github=github)
     from fastapi.testclient import TestClient
 
@@ -171,6 +295,7 @@ def test_engine_failure_stops_the_sandbox(settings, github):
         body = wait_until_settled(client, token, session_id)
     assert body["status"] == "error"
     assert "workspace mismatch" in body["error"]
+    assert "repository not found" in body["error"]
     assert driver.stopped
 
 

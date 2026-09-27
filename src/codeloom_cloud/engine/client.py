@@ -8,7 +8,7 @@ from codeloom_cloud.engine.commands import STREAM_LIMIT, ProtocolError, encode_c
 
 
 class EngineClient:
-    """NDJSON client for one codeloom.engine Unix socket."""
+    """NDJSON client for one codeloom.engine connection (Unix socket or TCP)."""
 
     def __init__(self, workspace: str) -> None:
         self.workspace = workspace
@@ -18,6 +18,13 @@ class EngineClient:
     async def connect(self, socket_path: str) -> None:
         self.reader, self.writer = await asyncio.open_unix_connection(
             socket_path,
+            limit=STREAM_LIMIT,
+        )
+
+    async def connect_tcp(self, host: str, port: int) -> None:
+        self.reader, self.writer = await asyncio.open_connection(
+            host,
+            port,
             limit=STREAM_LIMIT,
         )
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 from pathlib import Path
 
 from codeloom_cloud.sandbox.driver import SandboxHandle
@@ -39,7 +40,7 @@ class FakeEngine:
             try:
                 await writer.wait_closed()
             except Exception:
-                return
+                pass
 
     def _reply(self, command: dict) -> list[dict]:
         command_type = command.get("type")
@@ -105,6 +106,7 @@ class FakeSandboxDriver:
         self.envs: dict[str, dict[str, str]] = {}
         self.running: dict[str, bool] = {}
         self.stopped: list[str] = []
+        self.log_text = ""
 
     async def start(
         self,
@@ -115,7 +117,7 @@ class FakeSandboxDriver:
         if self.fail_start:
             raise RuntimeError("sandbox failed to start")
         host_workspace.mkdir(parents=True, exist_ok=True)
-        socket_path = host_workspace / ".engine" / "engine.sock"
+        socket_path = Path(tempfile.gettempdir()) / f"cle-{session_id[:12]}.sock"
         engine = FakeEngine(socket_path, fail_start=self.fail_engine)
         await engine.start()
         container_id = f"fake-{session_id}"
@@ -123,6 +125,9 @@ class FakeSandboxDriver:
         self.envs[session_id] = env
         self.running[container_id] = True
         return SandboxHandle(container_id=container_id, socket_path=socket_path)
+
+    async def logs(self, container_id: str, tail: int = 80) -> str:
+        return getattr(self, "log_text", "")
 
     async def stop(self, container_id: str) -> None:
         if container_id not in self.stopped:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 
 from codeloom_cloud.engine.client import EngineClient
 
@@ -11,7 +12,11 @@ logger = logging.getLogger(__name__)
 class SessionBridge:
     """One engine connection, fanned out to every websocket on the session."""
 
-    def __init__(self, client: EngineClient) -> None:
+    def __init__(
+        self,
+        client: EngineClient,
+        on_disconnect: Callable[[], None] | None = None,
+    ) -> None:
         self.client = client
         self.subscribers: list[asyncio.Queue[dict]] = []
         self.ready = asyncio.Event()
@@ -20,6 +25,7 @@ class SessionBridge:
         self._saw_snapshot = False
         self._task: asyncio.Task[None] | None = None
         self._closing = False
+        self._on_disconnect = on_disconnect
 
     def start(self) -> None:
         self._task = asyncio.create_task(self._read_loop())
@@ -74,9 +80,15 @@ class SessionBridge:
             if not self._closing:
                 logger.exception("engine read failed")
         finally:
-            if not self._closing and not self.ready.is_set():
+            if self._closing:
+                return
+            if not self.ready.is_set():
                 self.start_error = self.start_error or "engine connection closed"
                 self.ready.set()
+                return
+            self._fanout({"type": "ErrorOccurred", "message": "engine connection closed"})
+            if self._on_disconnect is not None:
+                self._on_disconnect()
 
     async def close(self) -> None:
         self._closing = True
