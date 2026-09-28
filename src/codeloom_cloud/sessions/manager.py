@@ -57,6 +57,9 @@ class SessionManager:
             env["GITHUB_TOKEN"] = token
         if self.settings.openrouter_api_key:
             env["OPENROUTER_API_KEY"] = self.settings.openrouter_api_key
+        model = (self.settings.openrouter_model or "").strip()
+        if model:
+            env["OPENROUTER_MODEL"] = model
         if self.settings.typesafe_api_key:
             env["TYPESAFE_API_KEY"] = self.settings.typesafe_api_key
         return env

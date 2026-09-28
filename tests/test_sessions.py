@@ -183,6 +183,7 @@ def test_session_provisions_and_streams_subagent_events(client, github, driver):
     engine = driver.engines[ready["id"]]
     assert engine.received[0] == {"type": "StartSession", "workspace": "/workspace"}
     assert driver.envs[ready["id"]]["OPENROUTER_API_KEY"] == "sk-test"
+    assert driver.envs[ready["id"]]["OPENROUTER_MODEL"] == "openai/gpt-5.6-luna"
     assert driver.envs[ready["id"]]["TYPESAFE_API_KEY"] == "ts-test"
     assert "ts-test" not in driver.envs[ready["id"]]["GIT_URL"]
 

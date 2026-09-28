@@ -43,7 +43,9 @@ class DockerSandboxDriver:
                 volumes={source: {"bind": "/workspace", "mode": "rw"}},
                 # Unix sockets on a Docker Desktop bind mount do not work.
                 # Keep the repo on the mount; put .engine on a Linux tmpfs.
-                tmpfs={"/workspace/.engine": "rw,mode=1777"},
+                # Docker's tmpfs default includes noexec. Writer worktrees and
+                # their node_modules live here, so binaries must be executable.
+                tmpfs={"/workspace/.engine": "rw,exec,mode=1777"},
                 ports={f"{ENGINE_PROXY_PORT}/tcp": ("127.0.0.1", None)},
                 mem_limit=memory,
                 cpu_period=cpu_period,

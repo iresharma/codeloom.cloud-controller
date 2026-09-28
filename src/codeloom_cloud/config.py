@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     session_secret: str = "dev-secret-change-me"
     token_encryption_key: str = ""
     openrouter_api_key: str = ""
+    openrouter_model: str = "openai/gpt-5.6-luna"
     typesafe_api_key: str = ""
     # Repository of the three sandbox images. The tag is replaced with
     # python, node, or golang when a session starts.

@@ -45,7 +45,8 @@ COPY --from=engine llm /opt/codeloom.engine/llm
 COPY --from=engine protocol /opt/codeloom.engine/protocol
 COPY --from=engine runtime /opt/codeloom.engine/runtime
 COPY --from=engine tools /opt/codeloom.engine/tools
-RUN pip install --no-cache-dir -r /opt/codeloom.engine/requirements.txt
+RUN pip install --no-cache-dir -r /opt/codeloom.engine/requirements.txt \
+ && python -m playwright install --with-deps chromium
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY select_toolchain.py /usr/local/bin/select_toolchain.py
