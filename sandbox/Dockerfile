@@ -10,13 +10,16 @@
 # releases. After clone, select_toolchain.py points PATH at the release the
 # repo pins, or the closest installed release. Language servers are already
 # on PATH, so the first diagnostics call does not download them.
+# Playwright and Chromium are installed here too. Browser tools must not
+# download a browser on first use.
 
 FROM python:3.11-slim-bookworm AS harness
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    GIT_TERMINAL_PROMPT=0
+    GIT_TERMINAL_PROMPT=0 \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git \
@@ -45,8 +48,17 @@ COPY --from=engine llm /opt/codeloom.engine/llm
 COPY --from=engine protocol /opt/codeloom.engine/protocol
 COPY --from=engine runtime /opt/codeloom.engine/runtime
 COPY --from=engine tools /opt/codeloom.engine/tools
-RUN pip install --no-cache-dir -r /opt/codeloom.engine/requirements.txt \
- && python -m playwright install --with-deps chromium
+# Browsers live in /ms-playwright, not under /root/.cache, so they stay
+# put when a later stage clears build caches and the harness Python can
+# launch Chromium without depending on HOME.
+RUN DEBIAN_FRONTEND=noninteractive \
+    pip install --no-cache-dir -r /opt/codeloom.engine/requirements.txt \
+ && DEBIAN_FRONTEND=noninteractive \
+    python -m playwright install --with-deps chromium \
+ && chmod -R a+rX /ms-playwright \
+ && find /ms-playwright -type f \( \
+      -name chrome -o -name chromium -o -name headless_shell -o -name chrome-headless-shell \
+    \) -executable | grep -q .
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY select_toolchain.py /usr/local/bin/select_toolchain.py

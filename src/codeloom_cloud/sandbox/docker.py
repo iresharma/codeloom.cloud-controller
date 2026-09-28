@@ -47,6 +47,10 @@ class DockerSandboxDriver:
                 # their node_modules live here, so binaries must be executable.
                 tmpfs={"/workspace/.engine": "rw,exec,mode=1777"},
                 ports={f"{ENGINE_PROXY_PORT}/tcp": ("127.0.0.1", None)},
+                # Chromium crashes on navigation when /dev/shm stays at
+                # Docker's 64MB default, and the dead page then fails every
+                # later browser_open.
+                shm_size="1g",
                 mem_limit=memory,
                 cpu_period=cpu_period,
                 cpu_quota=cpu_quota,
