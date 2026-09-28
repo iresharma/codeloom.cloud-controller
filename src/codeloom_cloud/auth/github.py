@@ -14,6 +14,32 @@ class GitHubError(Exception):
         self.status = status
 
 
+class GitHubAuthExpired(GitHubError):
+    """The stored GitHub grant can no longer be used or refreshed."""
+
+
+@dataclass(frozen=True)
+class GitHubToken:
+    access_token: str
+    refresh_token: str | None = None
+    expires_in: int | None = None
+
+
+def token_from_oauth_body(body: dict) -> GitHubToken:
+    token = body.get("access_token")
+    if not isinstance(token, str) or not token:
+        description = body.get("error_description") or "github token exchange failed"
+        raise GitHubError(str(description))
+    refresh = body.get("refresh_token")
+    expires = body.get("expires_in")
+    expires_in = expires if isinstance(expires, int) and expires > 0 else None
+    return GitHubToken(
+        access_token=token,
+        refresh_token=refresh if isinstance(refresh, str) and refresh else None,
+        expires_in=expires_in,
+    )
+
+
 @dataclass(frozen=True)
 class GitHubProfile:
     id: int
@@ -54,7 +80,7 @@ class GitHubAPI:
         )
         return f"https://github.com/login/oauth/authorize?{query}"
 
-    async def exchange_code(self, code: str) -> str:
+    async def exchange_code(self, code: str) -> GitHubToken:
         response = await self._request(
             "POST",
             "https://github.com/login/oauth/access_token",
@@ -66,12 +92,21 @@ class GitHubAPI:
             },
             headers={"Accept": "application/json"},
         )
-        body = response.json()
-        token = body.get("access_token")
-        if not isinstance(token, str) or not token:
-            description = body.get("error_description") or "github token exchange failed"
-            raise GitHubError(str(description))
-        return token
+        return token_from_oauth_body(response.json())
+
+    async def refresh_access_token(self, refresh_token: str) -> GitHubToken:
+        response = await self._request(
+            "POST",
+            "https://github.com/login/oauth/access_token",
+            data={
+                "client_id": self.settings.github_client_id,
+                "client_secret": self.settings.github_client_secret,
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+            },
+            headers={"Accept": "application/json"},
+        )
+        return token_from_oauth_body(response.json())
 
     async def get_user(self, token: str) -> GitHubProfile:
         body = await self._get_json("https://api.github.com/user", token)

@@ -37,6 +37,7 @@ def init_db(database_url: str) -> None:
     _ensure_project_runtime(_engine)
     _ensure_session_title(_engine)
     _ensure_session_archive(_engine)
+    _ensure_user_oauth_refresh(_engine)
 
 
 def _ensure_project_runtime(engine: Engine) -> None:
@@ -66,6 +67,19 @@ def _ensure_session_title(engine: Engine) -> None:
         return
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE sessions ADD COLUMN title TEXT"))
+
+
+def _ensure_user_oauth_refresh(engine: Engine) -> None:
+    """Add refresh-token columns on databases created before expiring OAuth tokens."""
+    inspector = inspect(engine)
+    if "users" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("users")}
+    with engine.begin() as conn:
+        if "refresh_token_encrypted" not in columns:
+            conn.execute(text("ALTER TABLE users ADD COLUMN refresh_token_encrypted TEXT"))
+        if "access_token_expires_at" not in columns:
+            conn.execute(text("ALTER TABLE users ADD COLUMN access_token_expires_at DATETIME"))
 
 
 def _ensure_session_archive(engine: Engine) -> None:

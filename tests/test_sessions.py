@@ -96,6 +96,25 @@ async def test_unknown_command_is_not_written(fake_engine):
     await client.close()
 
 
+def test_revoked_github_token_fails_the_session(client, github, driver):
+    token, access = login(client, github)
+    allow_repo(github, access)
+    project = client.post(
+        "/projects",
+        headers=auth_header(token),
+        json={"full_name": "octocat/hello"},
+    ).json()
+    github.users.pop(access)
+    created = client.post(
+        f"/projects/{project['id']}/sessions",
+        headers=auth_header(token),
+    )
+    assert created.status_code == 201
+    failed = wait_until_settled(client, token, created.json()["id"])
+    assert failed["status"] == "error"
+    assert "Sign in again" in failed["error"]
+
+
 @pytest.mark.parametrize(
     ("language", "runtime"),
     [

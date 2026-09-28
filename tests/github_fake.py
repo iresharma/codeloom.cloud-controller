@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from codeloom_cloud.auth.github import GitHubError, GitHubProfile, GitHubRepo
+from codeloom_cloud.auth.github import GitHubError, GitHubProfile, GitHubRepo, GitHubToken
 
 
 class FakeGitHub:
     def __init__(self) -> None:
         self.users: dict[str, GitHubProfile] = {}
         self.repos: dict[str, list[GitHubRepo]] = {}
+        self.grants: dict[str, GitHubToken] = {}
+        self.refresh_grants: dict[str, GitHubToken] = {}
 
     def add_user(
         self,
@@ -30,10 +32,16 @@ class FakeGitHub:
     def authorize_url(self, state: str) -> str:
         return f"https://github.com/login/oauth/authorize?state={state}"
 
-    async def exchange_code(self, code: str) -> str:
-        if code not in self.users:
+    async def exchange_code(self, code: str) -> GitHubToken:
+        if code not in self.users and code not in self.grants:
             raise GitHubError("bad code")
-        return code
+        return self.grants.get(code, GitHubToken(access_token=code))
+
+    async def refresh_access_token(self, refresh_token: str) -> GitHubToken:
+        try:
+            return self.refresh_grants[refresh_token]
+        except KeyError as exc:
+            raise GitHubError("refresh failed", status=401) from exc
 
     async def get_user(self, token: str) -> GitHubProfile:
         try:

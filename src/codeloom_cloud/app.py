@@ -32,7 +32,7 @@ def create_app(
 
         driver = DockerSandboxDriver(settings)
     github = github or GitHubAPI(settings)
-    manager = SessionManager(settings, driver)
+    manager = SessionManager(settings, driver, github)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):

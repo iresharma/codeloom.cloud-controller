@@ -9,10 +9,10 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from codeloom_cloud.api.schemas import UserOut
+from codeloom_cloud.auth.credentials import apply_github_grant
 from codeloom_cloud.auth.deps import get_current_user
 from codeloom_cloud.auth.github import GitHubError
 from codeloom_cloud.auth.tokens import issue_oauth_state, issue_session_token, read_oauth_state
-from codeloom_cloud.crypto import encrypt_token
 from codeloom_cloud.db import get_db
 from codeloom_cloud.models import User
 
@@ -40,12 +40,11 @@ async def github_callback(
         raise HTTPException(status_code=400, detail="missing oauth code or state")
     read_oauth_state(settings, state)
     try:
-        access_token = await request.app.state.github.exchange_code(code)
-        profile = await request.app.state.github.get_user(access_token)
+        grant = await request.app.state.github.exchange_code(code)
+        profile = await request.app.state.github.get_user(grant.access_token)
     except GitHubError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     user = db.query(User).filter(User.github_id == profile.id).one_or_none()
-    encrypted = encrypt_token(access_token, settings)
     if user is None:
         user = User(
             id=uuid4().hex,
@@ -53,7 +52,7 @@ async def github_callback(
             login=profile.login,
             name=profile.name,
             avatar_url=profile.avatar_url,
-            access_token_encrypted=encrypted,
+            access_token_encrypted="",
             created_at=datetime.now(timezone.utc),
         )
         db.add(user)
@@ -61,7 +60,7 @@ async def github_callback(
         user.login = profile.login
         user.name = profile.name
         user.avatar_url = profile.avatar_url
-        user.access_token_encrypted = encrypted
+    apply_github_grant(user, grant, settings)
     db.commit()
     session_token = issue_session_token(settings, user.id)
     target = f"{settings.frontend_origin}/auth/callback#token={quote(session_token)}"

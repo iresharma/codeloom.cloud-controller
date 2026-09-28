@@ -13,11 +13,12 @@ from starlette.websockets import WebSocketDisconnect
 
 from codeloom_cloud.api.projects import owned_project
 from codeloom_cloud.api.schemas import SessionArchiveIn, SessionOut, SessionTitleIn
+from codeloom_cloud.auth.credentials import ensure_access_token
 from codeloom_cloud.auth.deps import get_current_user
 from codeloom_cloud.auth.github import GitHubError
 from codeloom_cloud.auth.tokens import read_session_token
 from codeloom_cloud.config import Settings
-from codeloom_cloud.crypto import TokenError, decrypt_token
+from codeloom_cloud.crypto import TokenError
 from codeloom_cloud.db import get_db, open_session
 from codeloom_cloud.engine.commands import ProtocolError
 from codeloom_cloud.models import Project, SessionRecord, User
@@ -89,7 +90,9 @@ async def refresh_project_runtime(request: Request, user: User, project: Project
     lookup keeps the stored runtime so session start still proceeds.
     """
     try:
-        token = decrypt_token(user.access_token_encrypted, request.app.state.settings)
+        token = await ensure_access_token(
+            user, request.app.state.settings, request.app.state.github, db
+        )
         remote = await request.app.state.github.get_repo(
             token, f"{project.owner}/{project.repo}"
         )

@@ -6,8 +6,10 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
+from codeloom_cloud.auth.credentials import ensure_access_token
+from codeloom_cloud.auth.github import GitHubAPI
 from codeloom_cloud.config import Settings
-from codeloom_cloud.crypto import TokenError, decrypt_token
+from codeloom_cloud.crypto import TokenError
 from codeloom_cloud.db import open_session
 from codeloom_cloud.engine.bridge import SessionBridge
 from codeloom_cloud.engine.client import EngineClient
@@ -31,9 +33,15 @@ def _retryable_start(exc: Exception) -> bool:
 
 
 class SessionManager:
-    def __init__(self, settings: Settings, driver: SandboxDriver) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        driver: SandboxDriver,
+        github: GitHubAPI | None = None,
+    ) -> None:
         self.settings = settings
         self.driver = driver
+        self.github = github
         self._bridges: dict[str, SessionBridge] = {}
         self._tasks: set[asyncio.Task] = set()
         self._cancelled: set[str] = set()
@@ -73,11 +81,7 @@ class SessionManager:
             row = self._load(session_id)
             workspace = Path(row.workspace_path)
             workspace.mkdir(parents=True, exist_ok=True)
-            project, user = self._project_and_user(row.project_id, row.user_id)
-            try:
-                token = decrypt_token(user.access_token_encrypted, self.settings)
-            except TokenError as exc:
-                raise RuntimeError(str(exc)) from exc
+            project, token = await self._project_token(row.project_id, row.user_id)
             env = self.sandbox_env(project, token)
             image = image_for(self.settings.sandbox_image, project.runtime)
             handle = await self.driver.start(session_id, workspace, env, image)
@@ -344,15 +348,18 @@ class SessionManager:
         except Exception:
             logger.exception("container stop failed for %s", container_id)
 
-    def _project_and_user(self, project_id: str, user_id: str) -> tuple[Project, User]:
+    async def _project_token(self, project_id: str, user_id: str) -> tuple[Project, str]:
         with self._scope() as db:
             project = db.get(Project, project_id)
             user = db.get(User, user_id)
             if project is None or user is None:
                 raise RuntimeError("session is missing its project or user")
+            try:
+                token = await ensure_access_token(user, self.settings, self.github, db)
+            except TokenError as exc:
+                raise RuntimeError(str(exc)) from exc
             db.expunge(project)
-            db.expunge(user)
-            return project, user
+            return project, token
 
     def _load(self, session_id: str) -> SessionRecord:
         with self._scope() as db:

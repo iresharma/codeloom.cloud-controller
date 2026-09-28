@@ -11,7 +11,7 @@ pip install -e ".[dev]"
 cp .env.example .env
 ```
 
-Create a GitHub OAuth app. The callback URL must match `GITHUB_OAUTH_CALLBACK_URL`. The login flow requests `read:user` and `repo`, so the controller can list repositories, clone private ones, and let the engine's `gh` tools open pull requests as that user. Generate a Fernet key for `TOKEN_ENCRYPTION_KEY` if you do not want the GitHub token encrypted with a key derived from `SESSION_SECRET`:
+Create a GitHub OAuth app. The callback URL must match `GITHUB_OAUTH_CALLBACK_URL`. The login flow requests `read:user` and `repo`, so the controller can list repositories, clone private ones, and let the engine's `gh` tools open pull requests as that user. If the OAuth app expires user tokens, GitHub also returns a refresh token; the controller stores it and mints a new access token before a sandbox starts. A grant that cannot be refreshed fails the session with a sign-in error instead of a push that dies halfway through a run. Generate a Fernet key for `TOKEN_ENCRYPTION_KEY` if you do not want the GitHub token encrypted with a key derived from `SESSION_SECRET`:
 
 ```bash
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"

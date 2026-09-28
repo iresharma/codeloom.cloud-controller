@@ -8,10 +8,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from codeloom_cloud.api.github import github_access_token
 from codeloom_cloud.api.schemas import ProjectCreate, ProjectOut
 from codeloom_cloud.auth.deps import get_current_user
 from codeloom_cloud.auth.github import GitHubError
-from codeloom_cloud.crypto import TokenError, decrypt_token
 from codeloom_cloud.db import get_db
 from codeloom_cloud.models import Project, SessionRecord, User
 from codeloom_cloud.sandbox.images import runtime_for_language
@@ -70,10 +70,7 @@ async def create_project(
 ) -> ProjectOut:
     owner, repo = parse_full_name(body.full_name)
     try:
-        token = decrypt_token(user.access_token_encrypted, request.app.state.settings)
-    except TokenError as exc:
-        raise HTTPException(status_code=401, detail=str(exc)) from exc
-    try:
+        token = await github_access_token(request, user, db)
         remote = await request.app.state.github.get_repo(token, f"{owner}/{repo}")
     except GitHubError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
