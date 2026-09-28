@@ -23,6 +23,7 @@ def test_create_project_checks_github_access(client, github):
     assert body["full_name"] == "octocat/hello"
     assert body["default_branch"] == "main"
     assert body["owner"] == "octocat"
+    assert body["runtime"] == "python"
 
     again = client.post(
         "/projects",

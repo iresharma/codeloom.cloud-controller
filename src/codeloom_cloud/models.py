@@ -30,6 +30,7 @@ class Project(Base):
     owner: Mapped[str] = mapped_column(String(255))
     repo: Mapped[str] = mapped_column(String(255))
     default_branch: Mapped[str] = mapped_column(String(255))
+    runtime: Mapped[str] = mapped_column(String(16), default="python", server_default="python")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
@@ -48,5 +49,7 @@ class SessionRecord(Base):
     socket_path: Mapped[str] = mapped_column(Text)
     engine_session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    title: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    archive: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

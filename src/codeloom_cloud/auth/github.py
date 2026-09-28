@@ -30,6 +30,7 @@ class GitHubRepo:
     default_branch: str
     private: bool
     description: str | None
+    language: str | None = None
 
 
 class GitHubAPI:
@@ -144,4 +145,5 @@ def _repo(item: dict) -> GitHubRepo:
         default_branch=str(item.get("default_branch") or "main"),
         private=bool(item.get("private")),
         description=item.get("description"),
+        language=item.get("language"),
     )

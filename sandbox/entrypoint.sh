@@ -3,6 +3,10 @@ set -eu
 
 umask 000
 
+# The workspace is a bind mount owned by the host user. Git, running as root
+# in the container, would otherwise refuse it as dubious ownership.
+git config --global --add safe.directory '*'
+
 # gh already reads GITHUB_TOKEN. Do not run `gh auth login` — with the token
 # already in the environment that command exits after a warning and kills
 # the container before the engine starts.
@@ -10,7 +14,7 @@ if [ -n "${GITHUB_TOKEN:-}" ]; then
   git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"
 fi
 
-python /usr/local/bin/tcp_proxy.py &
+/usr/local/bin/python /usr/local/bin/tcp_proxy.py &
 proxy_pid=$!
 
 if [ ! -d /workspace/.git ]; then
@@ -29,7 +33,11 @@ if [ ! -d /workspace/.git ]; then
   rm -rf /tmp/src
 fi
 
-python /opt/codeloom.engine/app.py /workspace &
+# Swap in the Node, Python, or Go release this repo pins. The binaries are
+# already on the image; this only retargets a symlink.
+/usr/local/bin/python /usr/local/bin/select_toolchain.py /workspace
+
+/usr/local/bin/python /opt/codeloom.engine/app.py /workspace &
 pid=$!
 
 shutdown() {

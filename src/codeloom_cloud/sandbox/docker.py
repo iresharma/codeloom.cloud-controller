@@ -27,9 +27,9 @@ class DockerSandboxDriver:
         session_id: str,
         host_workspace: Path,
         env: dict[str, str],
+        image: str,
     ) -> SandboxHandle:
         source = self.settings.docker_bind_source(host_workspace)
-        image = self.settings.sandbox_image
         memory = self.settings.sandbox_memory
         cpu_period = 100_000
         cpu_quota = int(self.settings.sandbox_cpus * cpu_period)

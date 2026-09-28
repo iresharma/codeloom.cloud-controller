@@ -104,6 +104,7 @@ class FakeSandboxDriver:
         self.fail_engine = fail_engine
         self.engines: dict[str, FakeEngine] = {}
         self.envs: dict[str, dict[str, str]] = {}
+        self.images: dict[str, str] = {}
         self.running: dict[str, bool] = {}
         self.stopped: list[str] = []
         self.log_text = ""
@@ -113,6 +114,7 @@ class FakeSandboxDriver:
         session_id: str,
         host_workspace: Path,
         env: dict[str, str],
+        image: str,
     ) -> SandboxHandle:
         if self.fail_start:
             raise RuntimeError("sandbox failed to start")
@@ -123,6 +125,7 @@ class FakeSandboxDriver:
         container_id = f"fake-{session_id}"
         self.engines[session_id] = engine
         self.envs[session_id] = env
+        self.images[session_id] = image
         self.running[container_id] = True
         return SandboxHandle(container_id=container_id, socket_path=socket_path)
 

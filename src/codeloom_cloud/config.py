@@ -24,7 +24,9 @@ class Settings(BaseSettings):
     token_encryption_key: str = ""
     openrouter_api_key: str = ""
     typesafe_api_key: str = ""
-    sandbox_image: str = "codeloom-sandbox:main"
+    # Repository of the three sandbox images. The tag is replaced with
+    # python, node, or golang when a session starts.
+    sandbox_image: str = "codeloom-sandbox:python"
     engine_ref: str = "main"
     sandbox_memory: str = "2g"
     sandbox_cpus: float = 2.0

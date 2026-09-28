@@ -96,6 +96,62 @@ async def test_unknown_command_is_not_written(fake_engine):
     await client.close()
 
 
+@pytest.mark.parametrize(
+    ("language", "runtime"),
+    [
+        ("Python", "python"),
+        ("TypeScript", "node"),
+        ("JavaScript", "node"),
+        ("Go", "golang"),
+        ("Rust", "python"),
+        (None, "python"),
+    ],
+)
+def test_session_image_follows_repo_language(client, github, driver, language, runtime):
+    token, access = login(client, github)
+    slug = (language or "unknown").lower()
+    full_name = f"octocat/{slug}-app"
+    allow_repo(github, access, full_name=full_name, language=language)
+    project = client.post(
+        "/projects",
+        headers=auth_header(token),
+        json={"full_name": full_name},
+    ).json()
+    assert project["runtime"] == runtime
+    created = client.post(
+        f"/projects/{project['id']}/sessions",
+        headers=auth_header(token),
+    )
+    assert created.status_code == 201
+    ready = wait_until_settled(client, token, created.json()["id"])
+    assert ready["status"] == "ready"
+    assert driver.images[ready["id"]] == f"codeloom-sandbox:{runtime}"
+
+
+def test_session_refreshes_a_stale_runtime(client, github, driver):
+    token, access = login(client, github)
+    allow_repo(github, access, full_name="octocat/tools")
+    project = client.post(
+        "/projects",
+        headers=auth_header(token),
+        json={"full_name": "octocat/tools"},
+    ).json()
+    assert project["runtime"] == "python"
+    stored = github.repos[access][0]
+    github.repos[access][0] = stored.__class__(
+        **{**stored.__dict__, "language": "Go"}
+    )
+    created = client.post(
+        f"/projects/{project['id']}/sessions",
+        headers=auth_header(token),
+    )
+    ready = wait_until_settled(client, token, created.json()["id"])
+    assert ready["status"] == "ready"
+    assert driver.images[ready["id"]] == "codeloom-sandbox:golang"
+    refreshed = client.get(f"/projects/{project['id']}", headers=auth_header(token)).json()
+    assert refreshed["runtime"] == "golang"
+
+
 def test_session_provisions_and_streams_subagent_events(client, github, driver):
     token, access = login(client, github)
     allow_repo(github, access)
@@ -116,6 +172,13 @@ def test_session_provisions_and_streams_subagent_events(client, github, driver):
     assert ready["branch"] == "main"
     assert ready["engine_session_id"] == "engine-session"
     assert ready["error"] is None
+    assert ready["created_at"].endswith("Z")
+    listed = client.get(
+        f"/projects/{project['id']}/sessions",
+        headers=auth_header(token),
+    ).json()
+    assert listed[0]["created_at"].endswith("Z")
+    assert listed[0]["stopped_at"] is None
 
     engine = driver.engines[ready["id"]]
     assert engine.received[0] == {"type": "StartSession", "workspace": "/workspace"}
@@ -356,6 +419,42 @@ def test_stop_sends_shutdown_and_delete_removes_the_project(client, github, driv
     assert client.get(f"/projects/{project_id}", headers=auth_header(token)).status_code == 404
 
 
+def test_delete_removes_a_live_run(client, github, driver, settings):
+    token, access = login(client, github)
+    allow_repo(github, access)
+    project_id = client.post(
+        "/projects",
+        headers=auth_header(token),
+        json={"full_name": "octocat/hello"},
+    ).json()["id"]
+    session_id = client.post(
+        f"/projects/{project_id}/sessions",
+        headers=auth_header(token),
+    ).json()["id"]
+    assert wait_until_settled(client, token, session_id)["status"] == "ready"
+    workspace = settings.data_dir / "sessions" / session_id
+    assert workspace.is_dir()
+
+    other, _other_access = login(
+        client,
+        github,
+        login_name="hubot",
+        github_id=2,
+        access_token="gho_hubot",
+    )
+    hidden = client.delete(f"/sessions/{session_id}/record", headers=auth_header(other))
+    assert hidden.status_code == 404
+    assert workspace.is_dir()
+
+    removed = client.delete(f"/sessions/{session_id}/record", headers=auth_header(token))
+    assert removed.status_code == 204
+    assert client.get(f"/sessions/{session_id}", headers=auth_header(token)).status_code == 404
+    listed = client.get(f"/projects/{project_id}/sessions", headers=auth_header(token))
+    assert listed.json() == []
+    assert not workspace.exists()
+    assert driver.stopped
+
+
 def test_reattach_keeps_a_running_sandbox(settings, github):
     from fastapi.testclient import TestClient
 
@@ -476,6 +575,125 @@ async def test_reattach_marks_an_interrupted_provision(settings, github):
     finally:
         db.close()
     assert "fake-left" in driver.stopped
+
+
+def test_clip_title_uses_the_first_line():
+    from codeloom_cloud.api.sessions import clip_title
+
+    assert clip_title("  Make the sidebar readable\n\nand more") == "Make the sidebar readable"
+    clipped = clip_title("word " * 40)
+    assert clipped.endswith("…")
+    assert len(clipped) <= 120
+    assert clip_title("   ") == ""
+
+
+def test_first_prompt_names_the_session(client, github, driver):
+    token, access = login(client, github)
+    allow_repo(github, access)
+    project = client.post(
+        "/projects",
+        headers=auth_header(token),
+        json={"full_name": "octocat/hello"},
+    ).json()
+    created = client.post(
+        f"/projects/{project['id']}/sessions",
+        headers=auth_header(token),
+    )
+    assert created.json()["title"] is None
+    ready = wait_until_settled(client, token, created.json()["id"])
+    query = urlencode({"token": token})
+    with client.websocket_connect(f"/sessions/{ready['id']}/stream?{query}") as ws:
+        _until(ws, "SnapshotReady")
+        ws.send_json(
+            {
+                "type": "SubmitUserMessage",
+                "text": "Make the sidebar show what each run was about\nextra detail",
+            }
+        )
+        echoed = _until(ws, "ChatMessageAdded")
+        assert echoed["text"].startswith("Make the sidebar")
+        ws.send_json({"type": "SubmitUserMessage", "text": "A later message should not rename it"})
+        _until(ws, "ChatMessageAdded")
+
+    named = client.get(f"/sessions/{ready['id']}", headers=auth_header(token)).json()
+    assert named["title"] == "Make the sidebar show what each run was about"
+    listed = client.get(
+        f"/projects/{project['id']}/sessions",
+        headers=auth_header(token),
+    ).json()
+    assert listed[0]["title"] == named["title"]
+
+
+def test_title_patch_keeps_the_first_prompt(client, github):
+    token, access = login(client, github)
+    allow_repo(github, access)
+    project = client.post(
+        "/projects",
+        headers=auth_header(token),
+        json={"full_name": "octocat/hello"},
+    ).json()
+    created = client.post(
+        f"/projects/{project['id']}/sessions",
+        headers=auth_header(token),
+    ).json()
+    first = client.patch(
+        f"/sessions/{created['id']}",
+        headers=auth_header(token),
+        json={"title": "  Explain the repo  "},
+    )
+    assert first.status_code == 200
+    assert first.json()["title"] == "Explain the repo"
+    second = client.patch(
+        f"/sessions/{created['id']}",
+        headers=auth_header(token),
+        json={"title": "Rename after the fact"},
+    )
+    assert second.json()["title"] == "Explain the repo"
+    blank = client.patch(
+        f"/sessions/{created['id']}",
+        headers=auth_header(token),
+        json={"title": "   "},
+    )
+    assert blank.status_code == 422
+
+
+def test_session_archive_round_trip(client, github):
+    token, access = login(client, github)
+    allow_repo(github, access)
+    project = client.post(
+        "/projects",
+        headers=auth_header(token),
+        json={"full_name": "octocat/hello"},
+    ).json()
+    created = client.post(
+        f"/projects/{project['id']}/sessions",
+        headers=auth_header(token),
+    ).json()
+    empty = client.get(f"/sessions/{created['id']}/archive", headers=auth_header(token))
+    assert empty.status_code == 200
+    assert empty.json() == {"stats": None, "items": []}
+    payload = {
+        "stats": {"total_tokens": 1200, "requests": 4, "cost": 0.02},
+        "items": [{"kind": "message", "id": "m1", "role": "user", "text": "Explain the repo"}],
+    }
+    saved = client.put(
+        f"/sessions/{created['id']}/archive",
+        headers=auth_header(token),
+        json=payload,
+    )
+    assert saved.status_code == 200
+    assert saved.json()["stats"]["total_tokens"] == 1200
+    again = client.get(f"/sessions/{created['id']}/archive", headers=auth_header(token))
+    assert again.json()["items"][0]["text"] == "Explain the repo"
+    other, _other_access = login(
+        client,
+        github,
+        login_name="hubot",
+        github_id=2,
+        access_token="gho_hubot",
+    )
+    hidden = client.get(f"/sessions/{created['id']}/archive", headers=auth_header(other))
+    assert hidden.status_code == 404
 
 
 def test_host_data_dir_is_the_docker_bind_source(tmp_path):

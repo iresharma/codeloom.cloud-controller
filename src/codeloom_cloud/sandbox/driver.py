@@ -37,6 +37,7 @@ class SandboxDriver(Protocol):
         session_id: str,
         host_workspace: Path,
         env: dict[str, str],
+        image: str,
     ) -> SandboxHandle: ...
 
     async def stop(self, container_id: str) -> None: ...

@@ -14,6 +14,7 @@ from codeloom_cloud.auth.github import GitHubError
 from codeloom_cloud.crypto import TokenError, decrypt_token
 from codeloom_cloud.db import get_db
 from codeloom_cloud.models import Project, SessionRecord, User
+from codeloom_cloud.sandbox.images import runtime_for_language
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -41,6 +42,7 @@ def project_out(project: Project) -> ProjectOut:
         owner=project.owner,
         repo=project.repo,
         default_branch=project.default_branch,
+        runtime=project.runtime,
         created_at=project.created_at,
     )
 
@@ -85,6 +87,7 @@ async def create_project(
         owner=owner,
         repo=repo,
         default_branch=branch,
+        runtime=runtime_for_language(remote.language),
         created_at=datetime.now(timezone.utc),
     )
     db.add(project)

@@ -42,6 +42,7 @@ def allow_repo(
     full_name: str = "octocat/hello",
     branch: str = "main",
     private: bool = False,
+    language: str | None = None,
 ) -> GitHubRepo:
     owner, name = full_name.split("/", 1)
     repo = GitHubRepo(
@@ -51,6 +52,7 @@ def allow_repo(
         default_branch=branch,
         private=private,
         description=None,
+        language=language,
     )
     github.allow(access_token, repo)
     return repo

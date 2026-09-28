@@ -34,6 +34,7 @@ async def list_repos(
             default_branch=repo.default_branch,
             private=repo.private,
             description=repo.description,
+            language=repo.language,
         )
         for repo in repos
     ]

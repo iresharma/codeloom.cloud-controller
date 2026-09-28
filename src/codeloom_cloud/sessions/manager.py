@@ -18,6 +18,7 @@ from codeloom_cloud.sandbox.driver import (
     encode_engine_endpoint,
     parse_engine_endpoint,
 )
+from codeloom_cloud.sandbox.images import image_for
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +76,8 @@ class SessionManager:
             except TokenError as exc:
                 raise RuntimeError(str(exc)) from exc
             env = self.sandbox_env(project, token)
-            handle = await self.driver.start(session_id, workspace, env)
+            image = image_for(self.settings.sandbox_image, project.runtime)
+            handle = await self.driver.start(session_id, workspace, env, image)
             container_id = handle.container_id
             self._update(
                 session_id,

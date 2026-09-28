@@ -17,16 +17,20 @@ Create a GitHub OAuth app. The callback URL must match `GITHUB_OAUTH_CALLBACK_UR
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-Build the sandbox image from the local engine checkout (`workspace/engine`):
+Build the three sandbox images from the local engine checkout (`workspace/engine`). The harness only runs Python, Go, and JavaScript/TypeScript, so each image already has that language's toolchain and language server. A session uses the image that matches the repository's GitHub language (`Python`, `Go`, `JavaScript`, `TypeScript`). Any other language still starts, on the python image, and the engine reports that diagnostics are unavailable.
+
+After the clone, the image switches to the release the repo pins, using a copy that is already installed. Node reads `.nvmrc`, `.node-version`, or `package.json` `engines.node` and selects Node 20.20.2, 22.23.3, or 24.21.0. Python reads `.python-version` or `requires-python` and selects 3.11.16, 3.12.14, 3.13.15, or 3.14.7. Go reads `go.mod` and selects 1.24.13, 1.25.14, 1.26.8, or 1.27.1. A pin we do not have uses the closest installed line, so a Node 20 repo does not run on Node 24. The Node image also has Yarn 1.22.22 and pnpm 12.6.0 on each of those Node lines.
 
 ```bash
-docker build -t codeloom-sandbox:main \
-  -f sandbox/Dockerfile \
-  --build-context engine=../engine \
-  sandbox
+for runtime in python node golang; do
+  docker build --target "$runtime" -t "codeloom-sandbox:$runtime" \
+    -f sandbox/Dockerfile \
+    --build-context engine=../engine \
+    sandbox
+done
 ```
 
-`SANDBOX_IMAGE` must match that tag. `OPENROUTER_API_KEY` and `TYPESAFE_API_KEY` are injected into each sandbox and are not written into the clone. The engine uses the OpenRouter key for chat and the TypeSafe key for the judge. A session can still reach `ready` when either key is empty; chat or judging then fails inside the engine.
+`SANDBOX_IMAGE` is the repository. The controller replaces the tag with `python`, `node`, or `golang`, so `codeloom-sandbox:python` starts a Go repo as `codeloom-sandbox:golang`. `OPENROUTER_API_KEY` and `TYPESAFE_API_KEY` are injected into each sandbox and are not written into the clone. The engine uses the OpenRouter key for chat and the TypeSafe key for the judge. A session can still reach `ready` when either key is empty; chat or judging then fails inside the engine.
 
 ```bash
 uvicorn codeloom_cloud.main:app --host 0.0.0.0 --port 8000
