@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, WebSoc
 from sqlalchemy.orm import Session
 from starlette.websockets import WebSocketDisconnect
 
+from codeloom_cloud.api.github import github_access_token
 from codeloom_cloud.api.projects import owned_project
 from codeloom_cloud.api.schemas import SessionArchiveIn, SessionOut, SessionTitleIn
 from codeloom_cloud.auth.credentials import ensure_access_token
@@ -126,6 +127,7 @@ async def create_session(
     db: Session = Depends(get_db),
 ) -> SessionOut:
     project = owned_project(db, user, project_id)
+    await github_access_token(request, user, db)
     session_id = uuid4().hex
     workspace = (request.app.state.settings.data_dir / "sessions" / session_id).resolve()
     socket_path = workspace / ".engine" / "engine.sock"

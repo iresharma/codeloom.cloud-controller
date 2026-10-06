@@ -23,6 +23,14 @@ class User(Base):
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
+    @property
+    def github_refreshable(self) -> bool:
+        return bool(self.refresh_token_encrypted)
+
+    @property
+    def github_access_expires_at(self) -> datetime | None:
+        return self.access_token_expires_at
+
 
 class Project(Base):
     __tablename__ = "projects"

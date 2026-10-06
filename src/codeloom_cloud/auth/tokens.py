@@ -7,6 +7,7 @@ from fastapi import HTTPException
 from jwt import InvalidTokenError
 
 from codeloom_cloud.config import Settings
+from codeloom_cloud.http_errors import SESSION_INVALID, http_error
 
 
 def issue_session_token(settings: Settings, user_id: str) -> str:
@@ -21,10 +22,10 @@ def read_session_token(settings: Settings, token: str) -> str:
     try:
         payload = jwt.decode(token, settings.session_secret, algorithms=["HS256"])
     except InvalidTokenError as exc:
-        raise HTTPException(status_code=401, detail="invalid token") from exc
+        raise http_error(401, SESSION_INVALID, "invalid token") from exc
     subject = payload.get("sub")
     if not isinstance(subject, str) or not subject:
-        raise HTTPException(status_code=401, detail="invalid token")
+        raise http_error(401, SESSION_INVALID, "invalid token")
     return subject
 
 

@@ -16,6 +16,7 @@ class SessionBridge:
         self,
         client: EngineClient,
         on_disconnect: Callable[[], None] | None = None,
+        on_memory: Callable[[dict], None] | None = None,
     ) -> None:
         self.client = client
         self.subscribers: list[asyncio.Queue[dict]] = []
@@ -26,6 +27,7 @@ class SessionBridge:
         self._task: asyncio.Task[None] | None = None
         self._closing = False
         self._on_disconnect = on_disconnect
+        self._on_memory = on_memory
 
     def start(self) -> None:
         self._task = asyncio.create_task(self._read_loop())
@@ -72,6 +74,14 @@ class SessionBridge:
     async def _read_loop(self) -> None:
         try:
             async for event in self.client.events():
+                if event.get("type") == "MemoryExported":
+                    # Controller-internal: persist it, never fan out to the UI.
+                    if self._on_memory is not None:
+                        try:
+                            self._on_memory(event.get("memory") or {})
+                        except Exception:
+                            logger.exception("memory persist failed")
+                    continue
                 self._note(event)
                 self._fanout(event)
         except asyncio.CancelledError:

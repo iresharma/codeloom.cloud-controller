@@ -13,6 +13,7 @@ from codeloom_cloud.api.sessions import router as sessions_router
 from codeloom_cloud.auth.github import GitHubAPI
 from codeloom_cloud.config import Settings
 from codeloom_cloud.db import init_db
+from codeloom_cloud.memory_store import FileMemoryStore, MemoryStore
 from codeloom_cloud.sandbox.driver import SandboxDriver
 from codeloom_cloud.sessions.manager import SessionManager
 
@@ -23,6 +24,7 @@ def create_app(
     settings: Settings | None = None,
     driver: SandboxDriver | None = None,
     github: GitHubAPI | None = None,
+    memory_store: MemoryStore | None = None,
 ) -> FastAPI:
     settings = settings or Settings()
     settings.data_dir.mkdir(parents=True, exist_ok=True)
@@ -32,7 +34,8 @@ def create_app(
 
         driver = DockerSandboxDriver(settings)
     github = github or GitHubAPI(settings)
-    manager = SessionManager(settings, driver, github)
+    memory_store = memory_store or FileMemoryStore(settings.data_dir / "memory")
+    manager = SessionManager(settings, driver, github, memory_store=memory_store)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -46,6 +49,7 @@ def create_app(
     app.state.settings = settings
     app.state.manager = manager
     app.state.github = github
+    app.state.memory_store = memory_store
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[settings.frontend_origin],

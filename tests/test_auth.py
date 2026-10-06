@@ -11,6 +11,28 @@ from tests.helpers import auth_header, login
 def test_me_requires_a_bearer_token(client):
     response = client.get("/me")
     assert response.status_code == 401
+    assert response.json()["detail"]["code"] == "session_invalid"
+
+
+def test_me_reports_a_grant_without_a_refresh_token(client, github):
+    token, _access = login(client, github)
+    body = client.get("/me", headers=auth_header(token)).json()
+    assert body["github_refreshable"] is False
+    assert body["github_access_expires_at"] is None
+
+
+def test_me_reports_a_refreshable_grant(client, github):
+    from codeloom_cloud.auth.github import GitHubToken
+
+    github.grants["gho_octocat"] = GitHubToken(
+        access_token="gho_octocat",
+        refresh_token="ghr_octocat",
+        expires_in=28800,
+    )
+    token, _access = login(client, github, access_token="gho_octocat")
+    body = client.get("/me", headers=auth_header(token)).json()
+    assert body["github_refreshable"] is True
+    assert body["github_access_expires_at"]
 
 
 def test_login_redirects_and_callback_issues_a_session(client, github, settings):

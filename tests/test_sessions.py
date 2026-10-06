@@ -15,6 +15,7 @@ from codeloom_cloud.app import create_app
 from codeloom_cloud.config import Settings
 from codeloom_cloud.engine.client import EngineClient
 from codeloom_cloud.engine.commands import ProtocolError, prepare_command
+from codeloom_cloud.memory_store import FileMemoryStore
 from codeloom_cloud.sandbox.driver import SandboxHandle
 from codeloom_cloud.sandbox.fake import FakeEngine, FakeSandboxDriver
 from codeloom_cloud.sessions.manager import SessionManager
@@ -96,7 +97,7 @@ async def test_unknown_command_is_not_written(fake_engine):
     await client.close()
 
 
-def test_revoked_github_token_fails_the_session(client, github, driver):
+def test_revoked_github_token_rejects_session_create(client, github, driver):
     token, access = login(client, github)
     allow_repo(github, access)
     project = client.post(
@@ -109,10 +110,56 @@ def test_revoked_github_token_fails_the_session(client, github, driver):
         f"/projects/{project['id']}/sessions",
         headers=auth_header(token),
     )
+    assert created.status_code == 401
+    assert created.json()["detail"] == {
+        "code": "github_auth_expired",
+        "message": "GitHub authorization expired. Sign in again.",
+    }
+    listed = client.get(
+        f"/projects/{project['id']}/sessions",
+        headers=auth_header(token),
+    )
+    assert listed.json() == []
+
+
+def test_session_create_refreshes_an_expiring_grant(client, github, driver, settings):
+    from codeloom_cloud.auth.github import GitHubToken
+    from codeloom_cloud.crypto import decrypt_token
+    from codeloom_cloud.db import open_session
+    from codeloom_cloud.models import User
+
+    github.grants["gho_octocat"] = GitHubToken(
+        access_token="gho_octocat",
+        refresh_token="ghr_old",
+        expires_in=28800,
+    )
+    token, access = login(client, github, access_token="gho_octocat")
+    allow_repo(github, access)
+    allow_repo(github, "gho_new")
+    project = client.post(
+        "/projects",
+        headers=auth_header(token),
+        json={"full_name": "octocat/hello"},
+    ).json()
+    github.users.pop(access)
+    github.add_user("gho_new", github_id=1, login="octocat")
+    github.refresh_grants["ghr_old"] = GitHubToken(
+        access_token="gho_new",
+        refresh_token="ghr_new",
+        expires_in=28800,
+    )
+    created = client.post(
+        f"/projects/{project['id']}/sessions",
+        headers=auth_header(token),
+    )
     assert created.status_code == 201
-    failed = wait_until_settled(client, token, created.json()["id"])
-    assert failed["status"] == "error"
-    assert "Sign in again" in failed["error"]
+    db = open_session()
+    try:
+        user = db.query(User).one()
+        assert decrypt_token(user.access_token_encrypted, settings) == "gho_new"
+        assert decrypt_token(user.refresh_token_encrypted, settings) == "ghr_new"
+    finally:
+        db.close()
 
 
 @pytest.mark.parametrize(
@@ -752,3 +799,109 @@ def _until(ws, event_type: str) -> dict:
         if event["type"] == event_type:
             return event
     raise AssertionError(event_type)
+
+
+def _memory_payload(text: str) -> dict:
+    return {
+        "files": {},
+        "engineering": [{"text": text, "updated_at": ""}],
+        "product": [],
+        "cicd": [],
+        "other": [],
+    }
+
+
+def _start_session_memory(engine: FakeEngine):
+    starts = [c for c in engine.received if c.get("type") == "StartSession"]
+    assert starts, "engine never received StartSession"
+    return starts[0].get("memory", "__missing__")
+
+
+def test_provision_seeds_stored_memory(client, github, driver, settings):
+    token, access = login(client, github)
+    allow_repo(github, access, full_name="octocat/seeded")
+    project = client.post(
+        "/projects", headers=auth_header(token), json={"full_name": "octocat/seeded"}
+    ).json()
+    payload = _memory_payload("remembered from an earlier run")
+    FileMemoryStore(settings.data_dir / "memory").save(project["id"], payload)
+
+    created = client.post(
+        f"/projects/{project['id']}/sessions", headers=auth_header(token)
+    )
+    assert created.status_code == 201
+    ready = wait_until_settled(client, token, created.json()["id"])
+    assert ready["status"] == "ready"
+
+    assert _start_session_memory(driver.engines[created.json()["id"]]) == payload
+
+
+def test_provision_without_stored_memory_sends_no_memory_key(client, github, driver):
+    token, access = login(client, github)
+    allow_repo(github, access, full_name="octocat/blank")
+    project = client.post(
+        "/projects", headers=auth_header(token), json={"full_name": "octocat/blank"}
+    ).json()
+    created = client.post(
+        f"/projects/{project['id']}/sessions", headers=auth_header(token)
+    )
+    ready = wait_until_settled(client, token, created.json()["id"])
+    assert ready["status"] == "ready"
+
+    # No stored memory -> StartSession carries no memory key at all.
+    assert _start_session_memory(driver.engines[created.json()["id"]]) == "__missing__"
+
+
+def test_open_bridge_wires_memory_persistence(app, client, github, driver, settings):
+    token, access = login(client, github)
+    allow_repo(github, access, full_name="octocat/persist")
+    project = client.post(
+        "/projects", headers=auth_header(token), json={"full_name": "octocat/persist"}
+    ).json()
+    created = client.post(
+        f"/projects/{project['id']}/sessions", headers=auth_header(token)
+    )
+    session_id = created.json()["id"]
+    wait_until_settled(client, token, session_id)
+
+    bridge = app.state.manager.bridge_for(session_id)
+    assert bridge is not None
+    # _open_bridge wired the engine's memory stream to this project's store.
+    payload = _memory_payload("learned during the run")
+    bridge._on_memory(payload)
+
+    stored = FileMemoryStore(settings.data_dir / "memory").load(project["id"])
+    assert stored == payload
+
+
+async def test_bridge_intercepts_memory_exported_without_fanout():
+    from codeloom_cloud.engine.bridge import SessionBridge
+
+    class _Client:
+        def __init__(self, events):
+            self._events = events
+
+        async def events(self):
+            for event in self._events:
+                yield event
+
+        async def close(self):
+            return None
+
+    got: list[dict] = []
+    events = [
+        {"type": "SnapshotReady", "snapshot": {"session_id": "s"}},
+        {"type": "MemoryExported", "memory": {"engineering": [{"text": "x"}]}},
+    ]
+    bridge = SessionBridge(_Client(events), on_memory=got.append)
+    sub = bridge.subscribe()
+    bridge.start()
+    await asyncio.sleep(0.05)
+
+    assert got == [{"engineering": [{"text": "x"}]}]
+    seen = []
+    while not sub.empty():
+        seen.append(sub.get_nowait().get("type"))
+    assert "SnapshotReady" in seen
+    assert "MemoryExported" not in seen  # controller-internal, never fanned out
+    await bridge.close()

@@ -13,6 +13,7 @@ from codeloom_cloud.crypto import TokenError
 from codeloom_cloud.db import open_session
 from codeloom_cloud.engine.bridge import SessionBridge
 from codeloom_cloud.engine.client import EngineClient
+from codeloom_cloud.memory_store import MemoryStore
 from codeloom_cloud.models import Project, SessionRecord, User
 from codeloom_cloud.sandbox.driver import (
     SandboxDriver,
@@ -38,13 +39,16 @@ class SessionManager:
         settings: Settings,
         driver: SandboxDriver,
         github: GitHubAPI | None = None,
+        memory_store: MemoryStore | None = None,
     ) -> None:
         self.settings = settings
         self.driver = driver
         self.github = github
+        self.memory_store = memory_store
         self._bridges: dict[str, SessionBridge] = {}
         self._tasks: set[asyncio.Task] = set()
         self._cancelled: set[str] = set()
+        self._project_ids: dict[str, str] = {}
 
     def schedule(self, session_id: str) -> asyncio.Task:
         task = asyncio.create_task(self.provision(session_id), name=f"provision-{session_id}")
@@ -79,6 +83,7 @@ class SessionManager:
             if session_id in self._cancelled:
                 return
             row = self._load(session_id)
+            self._project_ids[session_id] = row.project_id
             workspace = Path(row.workspace_path)
             workspace.mkdir(parents=True, exist_ok=True)
             project, token = await self._project_token(row.project_id, row.user_id)
@@ -94,7 +99,9 @@ class SessionManager:
             if session_id in self._cancelled:
                 await self.driver.stop(container_id)
                 return
-            engine_session_id = await self._start_engine(session_id, handle)
+            engine_session_id = await self._start_engine(
+                session_id, handle, seed=self._load_seed(row.project_id)
+            )
             if session_id in self._cancelled:
                 await self._close_bridge(session_id)
                 await self.driver.stop(container_id)
@@ -199,10 +206,35 @@ class SessionManager:
         bridge = SessionBridge(
             client,
             on_disconnect=lambda: self._engine_gone(session_id),
+            on_memory=lambda data: self._persist_memory(session_id, data),
         )
         bridge.start()
         self._bridges[session_id] = bridge
         return bridge
+
+    def _load_seed(self, project_id: str) -> dict | None:
+        if self.memory_store is None:
+            return None
+        try:
+            return self.memory_store.load(project_id)
+        except Exception:
+            logger.exception("memory load failed for project %s", project_id)
+            return None
+
+    def _persist_memory(self, session_id: str, data: object) -> None:
+        if self.memory_store is None or not isinstance(data, dict):
+            return
+        project_id = self._project_ids.get(session_id)
+        if project_id is None:
+            try:
+                project_id = self._load(session_id).project_id
+            except KeyError:
+                return
+            self._project_ids[session_id] = project_id
+        try:
+            self.memory_store.save(project_id, data)
+        except Exception:
+            logger.exception("memory persist failed for %s", session_id)
 
     def _engine_gone(self, session_id: str) -> None:
         if session_id in self._cancelled:
@@ -246,11 +278,15 @@ class SessionManager:
         await self._connect(client, handle, self.settings.socket_wait_timeout)
         self._open_bridge(session_id, client)
 
-    async def _start_engine(self, session_id: str, handle: SandboxHandle) -> str:
+    async def _start_engine(
+        self, session_id: str, handle: SandboxHandle, seed: dict | None = None
+    ) -> str:
         """Connect and StartSession until SnapshotReady.
 
         Docker can accept the published port before the in-container proxy is
         listening, which looks like an immediate EOF. Retry until timeout.
+        ``seed`` is the project's stored memory, injected into StartSession so
+        the agent resumes with what earlier runs on this repo learned.
         """
         timeout = max(self.settings.socket_wait_timeout, self.settings.engine_ready_timeout)
         deadline = asyncio.get_running_loop().time() + timeout
@@ -269,9 +305,13 @@ class SessionManager:
             await self._close_bridge(session_id)
             bridge = self._open_bridge(session_id, client)
             try:
-                await bridge.send(
-                    {"type": "StartSession", "workspace": self.settings.engine_workspace}
-                )
+                start: dict = {
+                    "type": "StartSession",
+                    "workspace": self.settings.engine_workspace,
+                }
+                if seed:
+                    start["memory"] = seed
+                await bridge.send(start)
                 remaining = max(0.05, deadline - asyncio.get_running_loop().time())
                 return await bridge.wait_ready(remaining)
             except Exception as exc:
