@@ -4,6 +4,16 @@ HTTP control plane for [codeloom.engine](https://github.com/iresharma/codeloom.e
 
 ## Run
 
+The quickest path, from the umbrella `codeloom` checkout root, starts this and the web
+client together and prints the web client's URL once both are up:
+
+```bash
+./scripts/run
+```
+
+It builds any missing sandbox image itself, on first run — set `SANDBOX_BUILD_ON_STARTUP=false`
+to manage images yourself instead (see below). To run the controller on its own:
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
@@ -29,6 +39,14 @@ for runtime in python node golang; do
     sandbox
 done
 ```
+
+The controller runs this same build, per missing image, on its own startup (`sandbox.build.ensure_sandbox_images`)
+— an image that already exists is left alone, so a repeat startup is a fast no-op. A build failure, a missing
+engine checkout, or no Docker daemon is only logged; the controller still starts and sessions fail with their own
+clear error until the image exists. Build manually (as above) to pre-warm images, rebuild after an engine change,
+or on a host without Docker on `PATH`; set `SANDBOX_BUILD_ON_STARTUP=false` to disable the automatic build
+entirely. `SANDBOX_DIR` and `ENGINE_PATH` override where it looks for `sandbox/Dockerfile` and the engine checkout
+— unset, both are found relative to a `workspace/cloud-controller` next to `workspace/engine`.
 
 `SANDBOX_IMAGE` is the repository. The controller replaces the tag with `python`, `node`, or `golang`, so `codeloom-sandbox:python` starts a Go repo as `codeloom-sandbox:golang`. `OPENROUTER_API_KEY` and `TYPESAFE_API_KEY` are injected into each sandbox and are not written into the clone. The engine uses the OpenRouter key for chat and the TypeSafe key for the judge. A session can still reach `ready` when either key is empty; chat or judging then fails inside the engine.
 

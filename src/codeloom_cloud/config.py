@@ -34,10 +34,18 @@ class Settings(BaseSettings):
     engine_workspace: str = "/workspace"
     engine_ready_timeout: float = 120.0
     socket_wait_timeout: float = 120.0
+    # Build any missing sandbox image on startup. Only runs for the real
+    # Docker driver — never under tests, which use a fake sandbox driver.
+    sandbox_build_on_startup: bool = True
+    # Overrides for a checkout that isn't laid out as workspace/cloud-controller
+    # next to workspace/engine. Left unset, both are found relative to this
+    # file's own location in a `codeloom` checkout.
+    sandbox_dir: Path | None = None
+    engine_path: Path | None = None
 
-    @field_validator("host_data_dir", mode="before")
+    @field_validator("host_data_dir", "sandbox_dir", "engine_path", mode="before")
     @classmethod
-    def blank_host_dir(cls, value: object) -> object:
+    def blank_optional_path(cls, value: object) -> object:
         if value is None or value == "":
             return None
         return value
@@ -64,3 +72,22 @@ class Settings(BaseSettings):
         except ValueError:
             return str(resolved)
         return str(root / relative)
+
+    @property
+    def resolved_sandbox_dir(self) -> Path:
+        """Where sandbox/Dockerfile lives: this package's own checkout root."""
+        if self.sandbox_dir is not None:
+            return self.sandbox_dir.expanduser().resolve()
+        return (Path(__file__).resolve().parents[2] / "sandbox").resolve()
+
+    @property
+    def resolved_engine_path(self) -> Path:
+        """The engine checkout the sandbox images build from.
+
+        Defaults to workspace/engine, a sibling of workspace/cloud-controller
+        in the umbrella `codeloom` checkout — the same layout the README's
+        manual ``docker build --build-context engine=../engine`` assumes.
+        """
+        if self.engine_path is not None:
+            return self.engine_path.expanduser().resolve()
+        return (Path(__file__).resolve().parents[3] / "engine").resolve()

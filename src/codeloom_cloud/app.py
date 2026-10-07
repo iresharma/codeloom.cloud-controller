@@ -14,6 +14,8 @@ from codeloom_cloud.auth.github import GitHubAPI
 from codeloom_cloud.config import Settings
 from codeloom_cloud.db import init_db
 from codeloom_cloud.memory_store import FileMemoryStore, MemoryStore
+from codeloom_cloud.sandbox.build import ensure_sandbox_images
+from codeloom_cloud.sandbox.docker import DockerSandboxDriver
 from codeloom_cloud.sandbox.driver import SandboxDriver
 from codeloom_cloud.sessions.manager import SessionManager
 
@@ -30,8 +32,6 @@ def create_app(
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     init_db(settings.database_url)
     if driver is None:
-        from codeloom_cloud.sandbox.docker import DockerSandboxDriver
-
         driver = DockerSandboxDriver(settings)
     github = github or GitHubAPI(settings)
     memory_store = memory_store or FileMemoryStore(settings.data_dir / "memory")
@@ -40,6 +40,13 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         logging.basicConfig(level=logging.INFO)
+        if isinstance(driver, DockerSandboxDriver):
+            # Never fatal: a build failure just leaves sessions to fail with
+            # their own clear "image not found" error later.
+            try:
+                await ensure_sandbox_images(settings)
+            except Exception:
+                logger.exception("sandbox image build step failed")
         await app.state.manager.reattach()
         yield
         await app.state.manager.aclose()
