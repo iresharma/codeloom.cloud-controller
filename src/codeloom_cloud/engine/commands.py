@@ -24,6 +24,7 @@ ENGINE_COMMANDS = frozenset(
         "RequestContext",
         "RequestMemory",
         "RequestAgentTranscript",
+        "RequestModelCatalog",
     }
 )
 

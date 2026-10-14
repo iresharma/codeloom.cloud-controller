@@ -77,6 +77,24 @@ class FakeEngine:
             ]
         if command_type == "Shutdown":
             return [{"type": "SessionEnded", "reason": "shutdown"}]
+        if command_type == "RequestModelCatalog":
+            return [
+                {
+                    "type": "ModelCatalogUpdated",
+                    "models": [
+                        {
+                            "id": "anthropic/claude-opus-5.5",
+                            "name": "Claude Opus 5.5",
+                            "supports_reasoning": True,
+                            "mandatory": False,
+                            "default_effort": "medium",
+                            "default_enabled": True,
+                            "supported_efforts": None,
+                            "supports_max_tokens": True,
+                        }
+                    ],
+                }
+            ]
         return []
 
     def snapshot(self) -> dict:

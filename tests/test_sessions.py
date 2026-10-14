@@ -87,6 +87,26 @@ async def test_client_forwards_agent_transcript(fake_engine):
     await client.close()
 
 
+async def test_client_forwards_model_catalog(fake_engine):
+    client = EngineClient("/workspace")
+    await client.connect(str(fake_engine.socket_path))
+    reader = asyncio.create_task(_take(client, 1))
+    await asyncio.sleep(0)
+    await client.send({"type": "RequestModelCatalog"})
+    events = await reader
+    assert fake_engine.received[-1] == {"type": "RequestModelCatalog"}
+    assert events[0]["type"] == "ModelCatalogUpdated"
+    assert events[0]["models"][0]["id"] == "anthropic/claude-opus-5.5"
+    assert events[0]["models"][0]["supports_reasoning"] is True
+    await client.close()
+
+
+def test_prepare_command_accepts_request_model_catalog():
+    assert prepare_command({"type": "RequestModelCatalog"}, "/workspace") == {
+        "type": "RequestModelCatalog"
+    }
+
+
 async def test_unknown_command_is_not_written(fake_engine):
     client = EngineClient("/workspace")
     await client.connect(str(fake_engine.socket_path))
